@@ -1,0 +1,708 @@
+---
+title: "Data_Integration&Evaluation"
+author: "Krithika Umesh"
+date: "2023-05-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(Seurat)
+library(Matrix)
+library(harmony)
+library(patchwork)
+library(kBET)
+library(cluster, quietly = TRUE)
+library(liger)
+library(SeuratWrappers)
+library(lisi)
+library(cowplot)
+##Python env
+Sys.setenv(RETICULATE_PYTHON = "C:\\Users\\krith\\anaconda3/python.exe")
+library(reticulate)
+sc <- import('scanpy', convert=FALSE)
+scvi <- import("scvi", convert = FALSE)
+scanorama <- import("scanorama")
+library(sceasy)
+library(anndata)
+```
+
+**Read individual data objects**
+
+```{r, read individual data objects, echo=FALSE, cache=TRUE}
+normal_1 <- readRDS("C:/Users/krith/Desktop/GSE162631/Objects/normal_1.rds")
+
+tumor_1 <- readRDS("C:/Users/krith/Desktop/GSE162631/Objects/tumor_1.rds")
+
+normal_2 <- readRDS("C:/Users/krith/Desktop/GSE162631/Objects/normal_2.rds")
+
+tumor_2 <- readRDS("C:/Users/krith/Desktop/GSE162631/Objects/tumor_2.rds")
+
+```
+
+**Merge datasets and filter low quality cells**
+
+```{r, merge datasets, echo=FALSE, cache=FALSE}
+merge_data <- merge(x=normal_1, y=c(normal_2, tumor_1, tumor_2), add.cell.ids = c("Normal_1","Normal_2","Tumor_1","Tumor_2"), project="Combined")
+
+Idents(merge_data) <- "orig.ident"
+
+VlnPlot(merge_data, features = c("nFeature_RNA", "nCount_RNA","percent.mt"), ncol=3)
+plot1 <- FeatureScatter(merge_data, feature1 = 'nCount_RNA', feature2 = 'percent.mt')
+plot2 <- FeatureScatter(merge_data, feature1 = 'nCount_RNA', feature2 = 'nFeature_RNA')
+plot1+plot2
+
+```
+
+**Normalize and select variable features**
+
+```{r, Normalize and feature selection,echo=FALSE, cache=TRUE}
+batch_list <- SplitObject(merge_data, split.by = 'orig.ident')
+# normalize and identify variable features for each dataset independently
+batch_list <- lapply(X = batch_list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 5000)
+})
+# select features that are repeatedly variable across datasets for integration
+features <- SelectIntegrationFeatures(object.list = batch_list)
+
+```
+
+**Seurat Integration**
+
+```{r, Integration, echo=FALSE, cache=TRUE}
+anchors <- FindIntegrationAnchors(object.list = batch_list, anchor.features = features, k.filter= NA)
+# this command creates an 'integrated' data assay
+Seu_Int <- IntegrateData(anchorset = anchors)
+
+##Create 2 groups: Normal and Tumor
+Normal <- c("Normal_1", "Normal_2")
+Tumor <- c("Tumor_1", "Tumor_2")
+
+Seu_Int@meta.data$groups[Seu_Int@meta.data$orig.ident %in% Normal] <- "Normal"
+Seu_Int@meta.data$groups[Seu_Int@meta.data$orig.ident %in% Tumor] <- "Tumor"
+
+```
+
+**PCA and elbow plot - Seurat**
+
+```{r, Integrated Analysis,echo=FALSE, cache=TRUE}
+DefaultAssay(Seu_Int) <- "integrated"
+# Run the standard workflow for visualization and clustering
+Seu_Int <- ScaleData(Seu_Int, verbose = FALSE)
+Seu_Int <- RunPCA(Seu_Int, npcs = 50, verbose = FALSE)
+ElbowPlot(Seu_Int, ndims=ncol(Embeddings(Seu_Int, "pca")))
+print(Seu_Int[["pca"]], dims = 1:5, nfeatures = 5)
+VizDimLoadings(Seu_Int, dims = 1:2, reduction = "pca")
+
+```
+
+**UMAP**
+
+```{r, Non-linear reduction,echo=FALSE, cache=TRUE}
+Seu_Int <- RunUMAP(Seu_Int, reduction = "pca", dims = 1:50)
+Seu_Int <- FindNeighbors(Seu_Int, reduction = "pca", dims = 1:50)
+Seu_Int <- FindClusters(Seu_Int, resolution = c(0.01,0.05,0.1,0.5))
+
+```
+
+**Plots to view clusters**
+
+```{r, Plots, echo=FALSE, cache=TRUE}
+p1 <- DimPlot(Seu_Int, reduction = "umap", group.by = "orig.ident")
+p2 <- DimPlot(Seu_Int, reduction = "umap", label = TRUE, repel = TRUE)
+p1+p2
+
+p3 <- DimPlot(Seu_Int, reduction = "umap", group.by = "groups")
+p3+p2
+
+##UMAP Plots of 4 genes
+plot_a <- UMAPPlot(Seu_Int, group.by="orig.ident")
+plot_b <- UMAPPlot(Seu_Int, label=T)
+plot_c <- FeaturePlot(Seu_Int, c("TMEM204", "VWF", "CLDN5", "CAVIN2"))
+((plot_a+plot_b)|plot_c)+plot_layout(width=c(5,5))
+
+```
+
+**Seurat - Evaluation**
+
+```{r, Seurat Evaluation, cache=TRUE, echo=FALSE}
+##kBET
+data <- GetAssayData(Seu_Int, slot = "scale.data")
+data <- t(data)
+data <- as.matrix(data)
+batch <- Seu_Int$groups
+batch.estimate <- kBET(data, batch, plot=TRUE)
+
+##Silhouette score
+dist.matrix <- dist(x = Embeddings(object = Seu_Int[['umap']]))
+clusters <- Seu_Int$groups
+sil <- silhouette(x = as.numeric(x = as.factor(x = clusters)), dist = dist.matrix)
+Seu_Int$sil <- sil[, 3]
+print("The average silhouette score is:")
+summary(Seu_Int$sil)
+
+# mixing metric
+max.k <- 300
+mm <- MixingMetric(object = Seu_Int, grouping.var = "groups", reduction = 'pca', dims = 1:2, k=5, max.k = max.k)
+print("The average mixing metric score is:")
+summary(mm)
+
+#Compute LISI score
+Y <- Embeddings(Seu_Int[["pca"]])
+Y <- as.matrix(Y)
+metadata <- Seu_Int@meta.data
+metadata <- subset(metadata, select= -c(1,2,3,4,6,7,8,9,10,11,12,13))
+lisi_umap <- compute_lisi(Y, metadata, 'groups', perplexity=30)
+print("The summary of lisi score is:")
+summary(lisi_umap)
+
+# Local structure preservation
+DefaultAssay(object = Seu_Int) <- "RNA"
+ls <- LocalStruct(object = Seu_Int, grouping.var = "groups", reduction = 'pca', orig.dims = 1:30, neighbors = 100)
+ls <- unname(obj = unlist(x = ls))
+print("The average score for local structure preservation is:")
+summary(ls)
+```
+
+**LIGER integration**
+
+```{r, Data Integration-LIGER, cache=TRUE, echo=FALSE}
+merge_data <- merge(x=normal_1, y=c(normal_2, tumor_1, tumor_2), add.cell.ids = c("Normal_1","Normal_2","Tumor_1","Tumor_2"), project="Combined")
+
+Idents(merge_data) <- "orig.ident"
+
+liger_Int <- merge_data %>% NormalizeData() %>%
+    FindVariableFeatures(selection.method = "vst", nfeatures = 5000)
+liger_Int <- ScaleData(liger_Int, split.by = 'orig.ident', do.center=FALSE)
+liger_Int <- RunOptimizeALS(liger_Int, k=20, lambda = 5, split.by = 'orig.ident')
+liger_Int <- RunQuantileAlignSNF(liger_Int, split.by = 'orig.ident')
+liger_Int <- RunUMAP(liger_Int, dims=1:ncol(liger_Int[["iNMF"]]), reduction="iNMF")
+liger_Int <- FindNeighbors(liger_Int, reduction="iNMF", dims=1:ncol(Embeddings(liger_Int, "iNMF"))) %>% FindClusters(resolution=0.4)
+
+##Create 2 groups: Normal and Tumor
+Normal <- c("Normal_1", "Normal_2")
+Tumor <- c("Tumor_1", "Tumor_2")
+
+liger_Int@meta.data$groups[liger_Int@meta.data$orig.ident %in% Normal] <- "Normal"
+liger_Int@meta.data$groups[liger_Int@meta.data$orig.ident %in% Tumor] <- "Tumor"
+
+```
+
+**LIGER - Plots to view clusters**
+
+```{r, Plots-Liger, cache=TRUE, echo=FALSE}
+p1 <- DimPlot(liger_Int, reduction = "umap", group.by = "orig.ident")
+p2 <- DimPlot(liger_Int, reduction = "umap", label = TRUE, repel = TRUE)
+p1+p2
+
+p3 <- DimPlot(liger_Int, reduction = "umap", group.by = "groups")
+p3+p2
+##UMAP Plots of 4 genes
+plot_a <- UMAPPlot(liger_Int, group.by="orig.ident")
+plot_b <- UMAPPlot(liger_Int, label=T)
+plot_c <- FeaturePlot(liger_Int, c("TMEM204", "VWF", "CLDN5", "CAVIN2"))
+((plot_a+plot_b)|plot_c)+plot_layout(width=c(5,5))
+
+```
+
+**LIGER - Evaluation**
+
+```{r, Evaluate-Liger, cache=TRUE, echo=FALSE}
+##kBET
+data <- GetAssayData(liger_Int, slot = "scale.data")
+data <- t(data)
+data <- as.matrix(data)
+batch <- liger_Int$groups
+batch.estimate <- kBET(data, batch, plot=TRUE, do.pca=TRUE, dim.pca=10)
+
+##Silhouette score
+dist.matrix <- dist(x = Embeddings(object = liger_Int[['iNMF']]))
+clusters <- liger_Int$groups
+sil <- silhouette(x = as.numeric(x = as.factor(x = clusters)), dist = dist.matrix)
+liger_Int$sil <- sil[, 3]
+print("The average silhouette score is:")
+summary(liger_Int$sil)
+
+# mixing metric
+max.k <- 300
+mm <- MixingMetric(object = liger_Int, grouping.var = "orig.ident", reduction = 'iNMF', k=5, max.k = max.k)
+print("The average mixing metric score is:")
+summary(mm)
+
+#Compute LISI score
+Y <- Embeddings(liger_Int[["iNMF"]])
+Y <- as.matrix(Y)
+metadata <- liger_Int@meta.data
+metadata <- subset(metadata, select= -c(1,2,3,4,5,6,7,9))
+lisi <- compute_lisi(Y, metadata, 'groups', perplexity=30)
+summary(lisi)
+
+# Local structure preservation
+DefaultAssay(object = liger_Int) <- "RNA"
+ls <- LocalStruct(object = liger_Int, grouping.var = "groups", reduction = 'iNMF', neighbors = 100)
+ls <- unname(obj = unlist(x = ls))
+print("The average score for local structure preservation is:")
+summary(ls)
+```
+
+**Harmony - integration**
+
+```{r, Harmony integration, cache=TRUE, echo=FALSE}
+merge_data <- merge(x=normal_1, y=c(normal_2, tumor_1, tumor_2), add.cell.ids = c("Normal_1","Normal_2","Tumor_1","Tumor_2"), project="Combined")
+
+Idents(merge_data) <- "orig.ident"
+
+# Perform log-normalization and feature selection, scaling and PCA
+harmony_Int <- merge_data %>% NormalizeData() %>%
+    FindVariableFeatures(selection.method = "vst", nfeatures = 5000) %>% ScaleData() %>% RunPCA(npcs=50)
+harmony_Int <- RunHarmony(harmony_Int, group.by.vars = "orig.ident", dims.use = 1:50, max.iter.harmony = 50)
+harmony_Int <- RunUMAP(harmony_Int, reduction='harmony', dims=1:50)
+harmony_Int <- FindNeighbors(harmony_Int, reduction='harmony', dims=1:50) %>% FindClusters(resolution=0.2)
+
+##Create 2 groups: Normal and Tumor
+Normal <- c("Normal_1", "Normal_2")
+Tumor <- c("Tumor_1", "Tumor_2")
+
+harmony_Int@meta.data$groups[harmony_Int@meta.data$orig.ident %in% Normal] <- "Normal"
+harmony_Int@meta.data$groups[harmony_Int@meta.data$orig.ident %in% Tumor] <- "Tumor"
+
+```
+
+**Plots - Harmony**
+
+```{r, Plots-Harmony, cache=TRUE, echo=FALSE}
+##elbow plot and top genes in PC1 and PC2
+ElbowPlot(harmony_Int, ndims=ncol(Embeddings(harmony_Int, "pca")))
+VizDimLoadings(harmony_Int, dims = 1:2, reduction = "pca")
+
+p1 <- DimPlot(harmony_Int, reduction = "umap", group.by = "orig.ident")
+p2 <- DimPlot(harmony_Int, reduction = "umap", label = TRUE, repel = TRUE)
+p1+p2
+
+p3 <- DimPlot(harmony_Int, reduction = "umap", group.by = "groups")
+p3+p1
+p1+p2+p3+ plot_layout(width=c(10,5))
+
+##UMAP Plots of 4 genes
+plot_a <- UMAPPlot(harmony_Int, group.by="orig.ident")
+plot_b <- UMAPPlot(harmony_Int, label=T)
+plot_c <- FeaturePlot(harmony_Int, c("TMEM204", "VWF", "CLDN5", "CAVIN2"))
+((plot_a+plot_b)|plot_c)+plot_layout(width=c(5,5))
+
+```
+
+**Evaluation - Harmony**
+
+```{r, Harmony-Evaluation, echo=FALSE, cache=TRUE}
+##kBET
+data <- GetAssayData(harmony_Int, slot = "scale.data")
+data <- t(data)
+data <- as.matrix(data)
+batch <- harmony_Int$groups
+batch.estimate <- kBET(data, batch, plot=TRUE, do.pca=TRUE, dim.pca=10)
+
+##Silhouette score
+dist.matrix <- dist(x = Embeddings(object = harmony_Int[['umap']]))
+clusters <- harmony_Int$groups
+sil <- silhouette(x = as.numeric(x = as.factor(x = clusters)), dist = dist.matrix)
+harmony_Int$sil <- sil[, 3]
+print("The average silhouette score is:")
+summary(harmony_Int$sil)
+
+# mixing metric
+max.k <- 300
+mm <- MixingMetric(object = harmony_Int, grouping.var = "groups", reduction = 'pca', dims = 1:2, k=5, max.k = max.k)
+print("The average mixing metric score is:")
+summary(mm)
+
+#Compute LISI score
+Y <- Embeddings(harmony_Int[["umap"]])
+Y <- as.matrix(Y)
+metadata <- harmony_Int@meta.data
+metadata <- subset(metadata, select= -c(1,2,3,4,5,6,8))
+lisi_umap <- compute_lisi(Y, metadata, 'groups', perplexity=30)
+print("The lisi summary is:")
+summary(lisi_umap)
+
+# Local structure preservation
+DefaultAssay(object = harmony_Int) <- "RNA"
+ls <- LocalStruct(object = harmony_Int, grouping.var = "groups", reduction = 'pca', reduced.dims = 1:30, orig.dims = 1:30, neighbors = 100)
+ls <- unname(obj = unlist(x = ls))
+print("The average score for local structure preservation is:")
+summary(ls)
+
+```
+
+**RPCA - integration**
+
+```{r, rpca integrate, cache=TRUE, echo=FALSE}
+##load the data
+merge_data <- merge(x=normal_1, y=c(normal_2, tumor_1, tumor_2), add.cell.ids = c("Normal_1","Normal_2","Tumor_1","Tumor_2"), project="Combined")
+
+Idents(merge_data) <- "orig.ident"
+
+#Split object
+batch_list <- SplitObject(merge_data, split.by = 'orig.ident')
+# normalize and identify variable features for each dataset independently
+batch_list <- lapply(X = batch_list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 5000)
+})
+# select features that are repeatedly variable across datasets for integration
+features <- SelectIntegrationFeatures(object.list = batch_list)
+batch_list <- lapply(X = batch_list, FUN = function(x) {
+    x <- ScaleData(x, features = features, verbose = FALSE)
+    x <- RunPCA(x, features = features, verbose = FALSE)
+})
+
+```
+
+```{r, perform rpca integration, cache=TRUE, echo=FALSE}
+
+anchors <- FindIntegrationAnchors(object.list = batch_list, anchor.features = features, reduction = "rpca")
+
+# this command creates an 'integrated' data assay
+rpca_Int <- IntegrateData(anchorset = anchors, k.weight = 49)
+```
+
+```{r, analysis rpca, cache=TRUE, echo=FALSE}
+# specify that we will perform downstream analysis on the corrected data note that the
+# original unmodified data still resides in the 'RNA' assay
+DefaultAssay(rpca_Int) <- "integrated"
+
+# Run the standard workflow for visualization and clustering
+rpca_Int <- ScaleData(rpca_Int, verbose = FALSE)
+rpca_Int <- RunPCA(rpca_Int, npcs = 30, verbose = FALSE)
+rpca_Int <- RunUMAP(rpca_Int, reduction = "pca", dims = 1:30)
+rpca_Int <- FindNeighbors(rpca_Int, reduction = "pca", dims = 1:30)
+rpca_Int <- FindClusters(rpca_Int, resolution = 0.5)
+
+##Create 2 groups: Normal and Tumor
+Normal <- c("Normal_1", "Normal_2")
+Tumor <- c("Tumor_1", "Tumor_2")
+
+rpca_Int@meta.data$groups[rpca_Int@meta.data$orig.ident %in% Normal] <- "Normal"
+rpca_Int@meta.data$groups[rpca_Int@meta.data$orig.ident %in% Tumor] <- "Tumor"
+
+```
+
+**RPCA - Plots**
+
+```{r, Plots-RPCA, cache=TRUE, echo=FALSE}
+p1 <- DimPlot(rpca_Int, reduction = "umap", group.by = "orig.ident")
+p2 <- DimPlot(rpca_Int, reduction = "umap", label = TRUE, repel = TRUE)
+p1+p2
+
+p3 <- DimPlot(rpca_Int, reduction = "umap", group.by = "groups")
+p3+p2
+##UMAP Plots of 4 genes
+plot_a <- UMAPPlot(rpca_Int, group.by="orig.ident")
+plot_b <- UMAPPlot(rpca_Int, label=T)
+plot_c <- FeaturePlot(rpca_Int, c("TMEM204", "VWF", "CLDN5", "CAVIN2"))
+((plot_a+plot_b)|plot_c)+plot_layout(width=c(5,5))
+
+```
+
+**RPCA - Evaluation**
+
+```{r, evaluate rpca, cache=TRUE, echo=FALSE}
+##kBET
+data <- GetAssayData(rpca_Int, slot = "scale.data")
+data <- t(data)
+data <- as.matrix(data)
+batch <- rpca_Int$groups
+batch.estimate <- kBET(data, batch, plot=TRUE, do.pca=TRUE, dim.pca=10)
+
+##Silhouette score
+dist.matrix <- dist(x = Embeddings(object = rpca_Int[['umap']]))
+clusters <- rpca_Int$groups
+sil <- silhouette(x = as.numeric(x = as.factor(x = clusters)), dist = dist.matrix)
+rpca_Int$sil <- sil[, 3]
+print("The average silhouette score is:")
+summary(rpca_Int$sil)
+
+# mixing metric
+max.k <- 300
+mm <- MixingMetric(object = rpca_Int, grouping.var = "groups", reduction = 'pca', dims = 1:2, k=5, max.k = max.k)
+print("The average mixing metric score is:")
+summary(mm)
+
+#Compute LISI score
+Y <- Embeddings(rpca_Int[["umap"]])
+Y <- as.matrix(Y)
+metadata <- rpca_Int@meta.data
+metadata <- subset(metadata, select= -c(1,2,3,4,5,6,8))
+lisi_umap <- compute_lisi(Y, metadata, 'groups', perplexity=30)
+print("The lisi summary is:")
+summary(lisi_umap)
+
+# Local structure preservation
+DefaultAssay(object = rpca_Int) <- "RNA"
+ls <- LocalStruct(object = rpca_Int, grouping.var = "groups", reduction = 'pca', reduced.dims = 1:30, orig.dims = 1:30, neighbors = 100)
+ls <- unname(obj = unlist(x = ls))
+print("The average score for local structure preservation is:")
+summary(ls)
+```
+
+**scVI - integration**
+
+```{r, scvi integration, echo=FALSE, cache=TRUE}
+merge_data <- merge(x=normal_1, y=c(normal_2, tumor_1, tumor_2), add.cell.ids = c("Normal_1","Normal_2","Tumor_1","Tumor_2"), project="Combined")
+
+Idents(merge_data) <- "orig.ident"
+
+##Variable gene selection
+merge_data <- NormalizeData(merge_data, normalization.method = "LogNormalize", scale.factor = 10000)
+
+merge_data <- subset(merge_data, subset = nFeature_RNA > 200 & nFeature_RNA < 8000)
+merge_data <- FindVariableFeatures(merge_data, selection.method = "vst", nfeatures = 5000)
+top5000 <- head(VariableFeatures(merge_data), 5000)
+merge_data <- merge_data[top5000]
+
+```
+
+```{r, conversion to anndata, cache=TRUE}
+adata <- convertFormat(merge_data, from="seurat", to="anndata", main_layer="counts", drop_single_values=FALSE)
+print(adata)
+
+```
+
+```{r, train anndata model}
+# run setup_anndata, use column stim for batch
+scvi$model$SCVI$setup_anndata(adata, batch_key = 'orig.ident')
+
+# create the model
+model = scvi$model$SCVI(adata)
+
+# train the model
+model$train()
+
+```
+
+```{r, latent rep, cache=TRUE, echo=FALSE}
+# get the latent represenation
+latent = model$get_latent_representation()
+
+# put it back in our original Seurat object
+latent <- as.matrix(latent)
+rownames(latent) = colnames(merge_data)
+merge_data[["scvi"]] <- CreateDimReducObject(embeddings = latent, key = "scvi_", assay = DefaultAssay(merge_data))
+
+##Create 2 groups: Normal and Tumor
+Normal <- c("Normal_1", "Normal_2")
+Tumor <- c("Tumor_1", "Tumor_2")
+
+merge_data@meta.data$groups[merge_data@meta.data$orig.ident %in% Normal] <- "Normal"
+merge_data@meta.data$groups[merge_data@meta.data$orig.ident %in% Tumor] <- "Tumor"
+
+```
+
+**Plots - scVI**
+
+```{r, scvi Plots}
+#library(cowplot)
+# for jupyter notebook
+#options(repr.plot.width=10, repr.plot.height=8)
+
+merge_data <- RunUMAP(merge_data, dims = 1:10, reduction = "scvi", n.components = 2)
+p1 <- DimPlot(merge_data, reduction = "umap", group.by = "orig.ident", pt.size=2)
+plot_grid(p1)
+
+p2 <- DimPlot(merge_data, reduction = "umap", group.by = "groups", pt.size=2)
+plot_grid(p2)
+
+```
+
+**Evaluation - scVI**
+
+```{r, scvi evaluation, cache=TRUE, echo=FALSE}
+##kBET
+data <- GetAssayData(merge_data, slot = "scale.data")
+data <- t(data)
+data <- as.matrix(data)
+batch <- merge_data$groups
+batch.estimate <- kBET(data, batch, plot=TRUE)
+
+##Silhouette score
+dist.matrix <- dist(x = Embeddings(object = merge_data[['scvi']]))
+clusters <- merge_data$groups
+sil <- silhouette(x = as.numeric(x = as.factor(x = clusters)), dist = dist.matrix)
+merge_data$sil <- sil[, 3]
+print("The average silhouette score is:")
+summary(merge_data$sil)
+
+# mixing metric
+max.k <- 300
+mm <- MixingMetric(object = merge_data, grouping.var = "groups", reduction = 'scvi', dims = 1:2, k=5, max.k = max.k)
+print("The average mixing metric score is:")
+summary(mm)
+
+#Compute LISI score
+X <- Embeddings(merge_data[["scvi"]])
+X <- as.matrix(X)
+metadata <- merge_data@meta.data
+metadata <- subset(metadata, select= -c(1,2,3,4,6))
+lisi_scvi <- compute_lisi(X, metadata, 'groups', perplexity=30)
+summary(lisi_scvi)
+
+# Local structure preservation
+DefaultAssay(object = merge_data) <- "RNA"
+ls <- LocalStruct(object = merge_data, grouping.var = "groups", reduction = 'scvi', neighbors = 100)
+ls <- unname(obj = unlist(x = ls))
+print("The average score for local structure preservation is:")
+summary(ls)
+```
+
+**Scanorama - integration**
+
+```{r, merge and preprocess data for scanorama}
+merge_data <- merge(x=normal_1, y=c(normal_2, tumor_1, tumor_2), add.cell.ids = c("Normal_1","Normal_2","Tumor_1","Tumor_2"), project="Combined")
+
+Idents(merge_data) <- "orig.ident"
+##subset to avoid running out of memory
+#merge_data_sub <- subset(merge_data, downsample=1000)
+batch_list <- SplitObject(merge_data, split.by = 'orig.ident')
+# normalize and identify variable features for each dataset independently
+batch_list <- lapply(X = batch_list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 5000)
+})
+
+```
+
+```{r, create lists of matrices and genes, cache=TRUE, echo=FALSE}
+
+assaylist <- list()
+genelist <- list()
+for(i in 1:length(batch_list))
+{
+   assaylist[[i]] <- t(as.matrix(GetAssayData(batch_list[[i]], "data")))
+   genelist[[i]] <- rownames(batch_list[[i]])
+}
+
+```
+
+```{r, scanorama integration, cache=TRUE, echo=FALSE}
+
+integrated.data <- scanorama$integrate(assaylist, genelist)
+corrected.data <- scanorama$correct(assaylist, genelist, return_dense=TRUE)
+integrated.corrected.data <- scanorama$correct(assaylist, genelist, return_dimred=TRUE, return_dense=TRUE)
+```
+
+```{r, processing scanorama integrated object}
+#extract from the objects we just created the corrected counts (element number 2), and the dimensional reduction embeddings (element number 1), and collate each of them together.
+
+intdata <- lapply(integrated.corrected.data[[2]], t)
+panorama <- do.call(cbind, intdata)
+
+#use the common genes (element number 3) to give rownames to the integrated, batch-corrected expression matrix.
+rownames(panorama) <- as.character(integrated.corrected.data[[3]])
+colnames(panorama) <- unlist(sapply(assaylist, rownames))
+
+intdimred <- do.call(rbind, integrated.corrected.data[[1]])
+colnames(intdimred) <- paste0("PC_", 1:100)
+
+   #We also add standard deviations in order to draw Elbow Plots in Seurat
+
+stdevs <- apply(intdimred, MARGIN = 2, FUN = sd)
+
+```
+
+```{r, create seurat object from scanorama integrated}
+
+pan.int <- CreateSeuratObject(counts = panorama, assay = "pano",  project = "Integrated_scanorama")
+
+  #Adding metadata from all previous objects 
+pan.int@meta.data <- do.call(rbind, lapply(batch_list, function(x) x@meta.data))
+  
+    # VERY IMPORTANT: make sure that the rownames of your metadata slot 
+    # are the same as the colnames of your integrated expression matrix 
+
+rownames(pan.int@meta.data) <- colnames(pan.int)
+rownames(intdimred) <- colnames(pan.int)
+
+pan.int[["pca"]] <- CreateDimReducObject(embeddings = intdimred, stdev = stdevs, key = "PC_", assay = "pano")
+```
+
+```{r, UMAP pano, cache=TRUE, echo=FALSE}
+#Create elbow plot
+ElbowPlot(pan.int, ndims=ncol(Embeddings(pan.int, "pca")))
+print(pan.int[["pca"]], dims = 1:5, nfeatures = 5)
+#VizDimLoadings(pan.int, reduction = "pca")
+
+pan.int <- RunUMAP(pan.int, reduction = "pca", dims = 1:50)
+pan.int <- FindNeighbors(pan.int, reduction = "pca", dims = 1:50)
+pan.int <- FindClusters(pan.int, resolution = 0.6)
+```
+
+**Plots - Scanorama**
+
+```{r, plots scanorama, echo=FALSE, cache=TRUE}
+##Create 2 groups: Normal and Tumor
+Normal <- c("Normal_1", "Normal_2")
+Tumor <- c("Tumor_1", "Tumor_2")
+
+pan.int@meta.data$groups[pan.int@meta.data$orig.ident %in% Normal] <- "Normal"
+pan.int@meta.data$groups[pan.int@meta.data$orig.ident %in% Tumor] <- "Tumor"
+
+
+##Plots
+p1 <- DimPlot(pan.int, reduction = "umap", group.by = "orig.ident")
+p2 <- DimPlot(pan.int, reduction = "umap", label = TRUE, repel = TRUE)
+p1+p2
+
+p3 <- DimPlot(pan.int, reduction = "umap", group.by = "groups")
+
+p3+p1
+
+##UMAP Plots of 4 genes
+plot_a <- UMAPPlot(pan.int, group.by="orig.ident")
+plot_b <- UMAPPlot(pan.int, label=T)
+plot_c <- FeaturePlot(pan.int, c("TMEM204", "VWF", "CLDN5", "CAVIN2"))
+((plot_a+plot_b)|plot_c)+plot_layout(width=c(5,5))
+```
+
+**Evaluation - Scanorama**
+
+```{r, Evaluation, scanorama, cache=TRUE, echo=FALSE}
+
+##kBET
+data <- GetAssayData(pan.int, slot = "data")
+data <- t(data)
+data <- as.matrix(data)
+batch <- pan.int$groups
+batch.estimate <- kBET(data, batch, plot=TRUE)
+
+##Silhouette score
+dist.matrix <- dist(x = Embeddings(object = pan.int[['umap']]))
+clusters <- pan.int$groups
+sil <- silhouette(x = as.numeric(x = as.factor(x = clusters)), dist = dist.matrix)
+pan.int$sil <- sil[, 3]
+print("The average silhouette score is:")
+summary(pan.int$sil)
+
+# mixing metric
+max.k <- 300
+mm <- MixingMetric(object = pan.int, grouping.var = "groups", reduction = 'pca', dims = 1:2, k=5, max.k = max.k)
+print("The average mixing metric score is:")
+summary(mm)
+
+#Compute LISI score
+Y <- Embeddings(pan.int[["umap"]])
+Y <- as.matrix(Y)
+metadata <- pan.int@meta.data
+metadata <- subset(metadata, select= -c(1,2,3,4,5,6))
+lisi <- compute_lisi(Y, metadata, 'groups', perplexity=30)
+print("The summary of lisi score is:")
+summary(lisi)
+
+# Local structure preservation
+#DefaultAssay(object = pan.int) <- "RNA"
+ls <- LocalStruct(object = pan.int, grouping.var = "groups", reduction = 'pca', orig.dims = 1:30, neighbors = 100)
+ls <- unname(obj = unlist(x = ls))
+print("The average score for local structure preservation is:")
+summary(ls)
+```
+
+## R Markdown
