@@ -1,0 +1,300 @@
+---
+title: "Gene Co-expression Analysis"
+author: "Krithika Umesh"library(hdWGCNA)
+
+date: "2024-02-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(WGCNA)
+library(igraph)
+library(Seurat)
+library(hdWGCNA)
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(enrichR)
+library(GeneOverlap)
+
+# using the cowplot theme for ggplot
+theme_set(theme_cowplot())
+
+# set random seed for reproducibility
+set.seed(108)
+
+# optionally enable multithreading
+enableWGCNAThreads(nThreads = 8)
+```
+
+```{r, setup object, cache=TRUE, echo=FALSE}
+intdata <- readRDS("C:/Users/krith/Desktop/GSE162631/Objects/intobj.rds")
+
+#setup the object for WGCNA
+intdata <- SetupForWGCNA(intdata, wgcna_name = 'Co-expression')
+
+## construct metacells  in each group
+# specify the columns in seurat_obj@meta.data to group by
+# select the dimensionality reduction to perform KNN on
+ # nearest-neighbors parameter
+# maximum number of shared cells between two metacells
+intdata <- MetacellsByGroups(intdata, group.by = "groups", reduction = 'harmony', k = 20, max_shared = 10,
+ident.group = 'groups' # set the Idents of the metacell seurat object
+)
+
+#Normalize metacell matrix
+intdata <- NormalizeMetacells(intdata)
+```
+
+```{r, Coexpression Network Analysis, cache=TRUE, echo=FALSE}
+
+intdata <- SetDatExpr(
+  intdata,
+  group_name = "Tumor", # the name of the group of interest in the group.by column
+  group.by= "groups", # the metadata column containing the cell type info. This same column should have also been used in MetacellsByGroups
+  assay = 'RNA', # using RNA assay
+  slot = 'data' # using normalized data
+)
+```
+
+```{r, select soft-power threshold, cache=TRUE, echo=FALSE}
+# Test different soft powers:
+intdata <- TestSoftPowers(
+  intdata,
+  networkType = 'signed' # you can also use "unsigned" or "signed hybrid"
+)
+
+# plot the results:
+plot_list <- PlotSoftPowers(intdata)
+
+# assemble with patchwork
+wrap_plots(plot_list, ncol=2)
+
+power_table <- GetPowerTable(intdata)
+head(power_table)
+
+```
+
+```{r, construct coexpression network, echo=FALSE, cache=TRUE}
+# construct co-expression network:
+intdata <- ConstructNetwork(
+  intdata, soft_power=4,
+  setDatExpr=FALSE,
+  tom_name = 'Coexp', # name of the topological overlap matrix written to disk
+  overwrite_tom = TRUE
+)
+
+PlotDendrogram(intdata, main='hdWGCNA Dendrogram')
+
+```
+
+```{r, compute harmonized module eigengenes, cache=TRUE, echo=FALSE}
+# need to run ScaleData first or else harmony throws an error:
+intdata <- ScaleData(intdata, features=VariableFeatures(intdata))
+
+# compute all MEs in the full single-cell dataset
+intdata <- ModuleEigengenes(
+ intdata,
+ group.by.vars="groups"
+)
+
+# harmonized module eigengenes:
+hMEs <- GetMEs(intdata)
+
+# module eigengenes:
+MEs <- GetMEs(intdata, harmonized = FALSE)
+
+```
+
+
+```{r, kME, cache=TRUE, echo=FALSE}
+# compute eigengene-based connectivity (kME):
+intdata <- ModuleConnectivity(
+  intdata,
+  group.by = 'groups', group_name = 'Tumor'
+)
+
+# rename the modules
+intdata <- ResetModuleNames(
+  intdata,
+  new_name = "Coexp"
+)
+
+# plot genes ranked by kME for each module
+p <- PlotKMEs(intdata, ncol=5)
+
+p
+```
+
+```{r, Module assignment, cache=TRUE, echo=FALSE}
+# get the module assignment table:
+modules <- GetModules(intdata)
+
+# show the first 6 columns:
+head(modules[,1:6])
+
+# get hub genes
+hub_df <- GetHubGenes(intdata, n_hubs = 10)
+
+head(hub_df)
+```
+
+```{r, gene scoring, cache=TRUE, echo=FALSE}
+# compute gene scoring for the top 25 hub genes by kME for each module
+# with Seurat method
+intdata <- ModuleExprScore(
+  intdata,
+  n_genes = 50,
+  method='Seurat'
+)
+
+```
+```{r, Feature plots}
+# make a featureplot of hMEs for each module
+plot_list <- ModuleFeaturePlot(
+  intdata,
+  features='hMEs', # plot the hMEs
+  order=TRUE # order so the points with highest hMEs are on top
+)
+
+# stitch together with patchwork
+wrap_plots(plot_list, ncol=6)
+
+## plot module correlogram
+ModuleCorrelogram(intdata)
+
+```
+
+```{r, feature plot using gene scores, echo=FALSE, cache=TRUE}
+plot_list <- ModuleFeaturePlot(
+  intdata,
+  features='scores', # plot the hub gene scores
+  order='shuffle' # order so cells are shuffled
+  #Seurat = TRUE # depending on Seurat vs UCell for gene scoring
+)
+
+# stitch together with patchwork
+wrap_plots(plot_list, ncol=6)
+
+## plot module correlogram
+ModuleCorrelogram(intdata, features = 'scores')
+```
+
+
+```{r, Plots, cache=TRUE, echo=FALSE}
+# get hMEs from seurat object
+MEs <- GetMEs(intdata, harmonized=TRUE)
+mods <- colnames(MEs); mods <- mods[mods != 'grey']
+
+# add hMEs to Seurat meta-data:
+intdata@meta.data <- cbind(intdata@meta.data, MEs)
+
+# plot with Seurat's DotPlot function
+p1 <- DotPlot(intdata, features=mods, group.by = 'groups')
+
+# flip the x/y axes, rotate the axis labels, and change color scheme:
+p1 <- p1 +
+  coord_flip() +
+  RotatedAxis() +
+  scale_color_gradient2(high='red', mid='grey95', low='blue')
+
+# plot output
+p1
+
+##plot with orig ident
+p2 <- DotPlot(intdata, features=mods, group.by = 'orig.ident')
+
+# flip the x/y axes, rotate the axis labels, and change color scheme:
+p2 <- p2 +
+  coord_flip() +
+  RotatedAxis() +
+  scale_color_gradient2(high='red', mid='grey95', low='blue')
+
+# plot output
+p2
+
+p3 <- DotPlot(intdata, features=mods, group.by = 'seurat_clusters')
+p3 <- p3 +
+  coord_flip() +
+  RotatedAxis() +
+  scale_color_gradient2(high='red', mid='grey95', low='blue')
+
+# plot output
+p3
+
+```
+
+```{r, Enrichment analysis using enrichR, cache=TRUE, echo=FALSE}
+dbs <- c('GO_Biological_Process_2021','GO_Cellular_Component_2021','GO_Molecular_Function_2021')
+
+# perform enrichment tests
+intdata <- RunEnrichr(
+  intdata,
+  dbs=dbs, # character vector of enrichr databases to test
+  max_genes = 100, # number of genes per module to test
+  organism = "mouse"
+)
+
+# retrieve the output table
+enrich_df <- GetEnrichrTable(intdata)
+
+```
+```{r, enrich plot}
+# make GO term plots:
+EnrichrBarPlot(
+  intdata,
+  outdir = "enrichr_plots_Naive", # name of output directory
+  n_terms = 25, # number of enriched terms to show (sometimes more show if there are ties!!!)
+  plot_size = c(6,15), # width, height of the output .pdfs
+  logscale=FALSE # do you want to show the enrichment as a log scale?
+)
+
+EnrichrDotPlot(
+intdata,
+mods = "all", # use all modules (this is the default behavior)
+database = "GO_Cellular_Component_2021", # this has to be one of the lists we used above!!!
+n_terms=3 # number of terms for each module
+)
+
+```
+```{r, Marker gene overlap, echo=FALSE, cache=TRUE}
+# compute cell-type marker genes with Seurat:
+Idents(intdata) <- intdata$groups
+markers <- Seurat::FindAllMarkers(
+  intdata,
+  only.pos = TRUE,
+  logfc.threshold=1
+)
+
+# compute marker gene overlaps
+overlap_df <- OverlapModulesDEGs(
+  intdata,
+  deg_df = markers,
+  fc_cutoff = 1 # log fold change cutoff for overlap analysis
+)
+
+```
+
+
+```{r, visualize overlap, echo=FALSE, cache=TRUE}
+# overlap barplot, produces a plot for each cell type
+plot_list <- OverlapBarPlot(overlap_df)
+
+# stitch plots with patchwork
+wrap_plots(plot_list, ncol=3)
+
+# plot odds ratio of the overlap as a dot plot
+OverlapDotPlot(
+  overlap_df,
+  plot_var = 'odds_ratio') +
+  ggtitle('Overlap of modules & cell-type markers')
+
+```
+
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+
