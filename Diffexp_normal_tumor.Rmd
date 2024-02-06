@@ -1,0 +1,130 @@
+---
+title: "Diffexp_Brain_HEV"
+author: "Krithika Umesh"
+date: "2023-06-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(Seurat)
+library(Matrix)
+library(harmony)
+library(patchwork)
+library(multtest)
+library(metap)
+library(MAST)
+library(clusterProfiler)
+library(enrichplot)
+library(ggnewscale)
+library(org.Hs.eg.db)
+library(dplyr)
+
+```
+
+```{r, setup object, cache=TRUE, echo=FALSE}
+#load the integrated object for analysis
+intdata <- readRDS("C:/Users/krith/Desktop/GSE162631/Objects/intobj.rds")
+
+# Find differentially expressed features between normal and tumor cells, only search for positive markers
+#Change the idents to groups for differential expression as 2 datasets of HEV are used for integration
+Idents(intdata) <- "groups"
+
+##Diff exp using MAST, Tumor as reference
+normal_mark <- FindMarkers(intdata, ident.1 = "Normal", ident.2 = "Tumor", test.use = 'MAST', logfc.threshold = 0.25, only.pos = TRUE, min.diff.pct = 0.25)
+
+head(normal_mark)
+
+top10_markers <- normal_mark %>% top_n(n=10, wt=avg_log2FC)
+top10_markers <- as.data.frame(top10_markers)
+top10_markers
+##write.csv(normal_mark, "C:/Users/krith/Desktop/GSE162631/normal_mark.csv")##
+
+```
+
+
+```{r, plots}
+#Vln plots of normal markers
+VlnPlot(intdata, features = rownames(top10_markers))
+#Feature plot of normal markers
+FeaturePlot(intdata, features = rownames(top10_markers))
+#Dot plot of the top markers of normal cells
+DotPlot(intdata, features=rownames(top10_markers), group.by='groups', cols = c("lightgrey", "blue"),
+col.min = -2.5,col.max = 2.5, dot.min = 0)
+```
+```{r, enrichment analysis, echo=FALSE, cache=TRUE}
+#label the first column header as 'Gene' in the brain_mark file, save it and read it
+diffexp <- read.csv("C:/Users/krith/Desktop/GSE162631/normal_mark.csv")
+
+#Enrichment analysis of cellular component
+enrich_CC <- enrichGO(gene=diffexp$Gene, OrgDb = org.Hs.eg.db, ont="CC", keyType = 'SYMBOL', readable = FALSE)
+barplot(enrich_CC, x = 'GeneRatio', color = "p.adjust", font.size = 7, showCategory = 20)
+dotplot(enrich_CC, x="Count", font.size=6, color="qvalue", size="GeneRatio", showCategory=20)
+##write.csv(enrich_CC@result, "C:/Users/krith/Documents/Lab/DE_analysis/Brain_HEV/brain_mark_CC.csv")###
+
+```
+
+```{r, enrichment BP}
+#Enrichment analysis of biological process
+enrich_BP <- enrichGO(gene=diffexp$Gene, OrgDb = org.Hs.eg.db, ont="BP", keyType = 'SYMBOL', readable = FALSE)
+barplot(enrich_BP, x = 'GeneRatio', color = "p.adjust", font.size = 7, showCategory = 20)
+dotplot(enrich_BP, x="Count", font.size=6, color="qvalue", size="GeneRatio", showCategory=20)
+
+```
+
+```{r, enrichment MF}
+#Enrichment analysis of molecular function
+enrich_MF <- enrichGO(gene=diffexp$Gene, OrgDb = org.Hs.eg.db, ont="MF", keyType = 'SYMBOL', readable = FALSE)
+barplot(enrich_MF, x = 'GeneRatio', color = "p.adjust", font.size = 7, showCategory = 20)
+dotplot(enrich_MF, x="Count", font.size=6, color="qvalue", size="GeneRatio", showCategory=20)
+```
+
+```{r, diffexp with hev as ref}
+#Diff exp with normal markers as reference
+tumor_mark <- FindMarkers(intdata, ident.1 = "Tumor", ident.2 = "Normal", test.use = 'MAST', logfc.threshold = 0.25, only.pos = TRUE, min.diff.pct = 0.25)
+
+head(tumor_mark)
+
+#write to file
+#write.csv(tumor_mark, "C:/Users/krith/Desktop/GSE162631/tumor_mark.csv")
+
+
+top10 <- tumor_mark %>% top_n(n=10, wt=avg_log2FC)
+top10 <- as.data.frame(top10)
+top10
+
+#Vln plots of tumor markers
+VlnPlot(intdata, features = rownames(top10))
+#Feature plot of tumor markers
+FeaturePlot(intdata, features = rownames(top10))
+
+
+```
+
+
+```{r, enrichment analysis}
+#label the first column header as 'Gene' in the hev_mark file, save it and read it
+diffexp1 <- read.csv("C:/Users/krith/Desktop/GSE162631/tumor_mark.csv")
+
+#Enrichment analysis of cellular component
+enrich_CC1 <- enrichGO(gene=diffexp1$Gene, OrgDb = org.Hs.eg.db, ont="CC", keyType = 'SYMBOL', readable = FALSE)
+barplot(enrich_CC1, x = 'GeneRatio', color = "p.adjust", font.size = 7, showCategory = 20)
+dotplot(enrich_CC1, x="Count", font.size=6, color="qvalue", size="GeneRatio", showCategory=20)
+
+##write.csv(enrich_CC1@result, "C:/Users/krith/Documents/Lab/DE_analysis/Brain_HEV/hev_mark_CC.csv")###
+
+#Enrichment analysis of biological process
+enrich_BP1 <- enrichGO(gene=diffexp1$Gene, OrgDb = org.Hs.eg.db, ont="BP", keyType = 'SYMBOL', readable = FALSE)
+barplot(enrich_BP1, x = 'GeneRatio', color = "p.adjust", font.size = 7, showCategory = 20)
+dotplot(enrich_BP1, x="Count", font.size=6, color="qvalue", size="GeneRatio", showCategory=20)
+
+#Enrichment analysis of molecular function
+enrich_MF1 <- enrichGO(gene=diffexp1$Gene, OrgDb = org.Hs.eg.db, ont="MF", keyType = 'SYMBOL', readable = FALSE)
+barplot(enrich_MF1, x = 'GeneRatio', color = "p.adjust", font.size = 7, showCategory = 20)
+dotplot(enrich_MF1, x="Count", font.size=6, color="qvalue", size="GeneRatio", showCategory=20)
+```
+
+
+
+## R Markdown
+
