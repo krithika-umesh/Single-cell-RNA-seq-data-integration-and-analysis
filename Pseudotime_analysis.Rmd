@@ -1,0 +1,348 @@
+---
+title: "Pseudotime_endo"
+author: "Krithika Umesh"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(Seurat)
+library(ggplot2)
+library(destiny)
+library(gam)
+library(cowplot)
+##Python env
+Sys.setenv(RETICULATE_PYTHON = "C:\\Users\\krith\\anaconda3/python.exe")
+library(reticulate)
+sc <- import('scanpy', convert=FALSE)
+library(anndata)
+library(Matrix)
+library(SingleCellExperiment)
+library(slingshot)
+library(DelayedMatrixStats)
+library(RColorBrewer)
+library(dplyr)
+library(ComplexHeatmap)
+library(tradeSeq)
+
+```
+
+```{r}
+intdata <- readRDS("C:/Users/krith/Desktop/GSE162631/objects/intobj.rds")
+Idents(intdata) <- "groups"
+UMAPPlot(intdata)
+DimPlot(intdata, reduction = "pca")
+plt_dat <- FetchData(intdata, c("PC_1", "groups"))
+cell_type <- factor(plt_dat$groups,
+levels = c("Normal","Tumor"))
+plt_dat$groups <- cell_type
+
+ggplot(plt_dat, aes(cell_type, PC_1)) +
+geom_jitter(aes(color = cell_type)) +
+labs(y = "PC1 (aka pseudotime)")
+
+# get PC1 values and rank to generate a "pseudotime"
+ptime <- FetchData(intdata, "PC_1")
+ptime$ptime <- rank(ptime$PC_1)
+
+# add to metadata
+intdata <- AddMetaData(intdata, 
+                    ptime$ptime, 
+                    col.name = "Pseudotime")
+
+FeaturePlot(intdata, "Pseudotime")
+
+DimPlot(intdata, 
+        group.by  = "groups", 
+        reduction = "umap")
+```
+
+```{r, Diffusion map}
+logcounts <- GetAssayData(intdata, "RNA")
+logcounts <- as.matrix(logcounts)
+
+# transpose matrix (genes as columns, cells as rows)
+input_matrix <- t(logcounts[VariableFeatures(intdata), ])
+
+set.seed(42)
+dm <- DiffusionMap(as.matrix(input_matrix))
+intdata$groups <- as.factor(intdata$groups)
+
+plot(dm, 1:2, col = intdata$groups)
+
+dpt <- DPT(dm, tips = 268)
+plot(dpt, 1:2)
+```
+```{r, convert to adata object for PAGA}
+int_adata <- AnnData(X=t(intdata[['RNA']]@data), obs = data.frame(celltype=intdata@active.ident, row.names = colnames(intdata)), var=intdata[['RNA']]@meta.features, layers=list(counts=t(intdata[['RNA']]@counts)), obsm=list(pca=Embeddings(intdata,"pca")[,1:50], umap=Embeddings(intdata,"umap")))
+
+#endo_adata <- convertFormat(endo_harmony, from="seurat", to="anndata", main_layer="counts", drop_single_values=FALSE)
+int_adata
+
+#endo_adata$write_h5ad("C:/Users/abhir/OneDrive/Documents/R_data_analysis/Trajectory_analysis/endo_adata.h5ad")
+```
+```{r, PAGA}
+#endo_adata <- sc$read("C:/Users/abhir/OneDrive/Documents/R_data_analysis/Trajectory_analysis/endo_adata.h5ad")
+sc$pp$neighbors(int_adata, n_neighbors=20L, use_rep='pca')
+sc$tl$paga(int_adata, groups = 'celltype')
+
+```
+```{r}
+plt <- import("matplotlib")
+plt$use("Agg", force=TRUE)
+sc$pl$paga(int_adata, color = 'celltype', fontsize = 7, frameon = FALSE)
+```
+
+```{r, Slingshot}
+#convert to SingleCellExperiment
+sce <- as.SingleCellExperiment(intdata)
+
+#subset to only a few PCA dimensions
+reducedDim(sce) <- reducedDim(sce)[, 1:10]
+
+sce <- suppressWarnings(slingshot(
+  sce,
+  reducedDim = 'PCA',
+  clusterLabels = 'seurat_clusters',
+  #start.clus = "0"
+))
+
+# extract info about pseudotimes from sce
+slo <- SlingshotDataSet(sce)
+
+slo
+```
+
+```{r}
+# Plot clusters with lineages overlayed
+plot(reducedDims(sce)$PCA, col = brewer.pal(9,'Set1')[sce$seurat_clusters], pch=16)
+lines(SlingshotDataSet(sce), lwd=2, col='black')
+```
+```{r}
+# Plot pseudotime for a lineage
+# get colors for pseudotime from lineage 1
+colors <- colorRampPalette(brewer.pal(11,'Spectral')[-6])(100)
+plotcol <- colors[cut(sce$slingPseudotime_1, breaks=100)]
+
+plot(reducedDims(sce)$PCA, col = plotcol, pch=16)
+lines(SlingshotDataSet(sce), lwd=2, col='black')
+
+# get colors for pseudotime from lineage 2
+colors <- colorRampPalette(brewer.pal(11,'Spectral')[-6])(100)
+plotcol <- colors[cut(sce$slingPseudotime_2, breaks=100)]
+
+plot(reducedDims(sce)$PCA, col = plotcol, pch=16)
+lines(SlingshotDataSet(sce), lwd=2, col='black')
+
+# get colors for pseudotime from lineage 3
+colors <- colorRampPalette(brewer.pal(11,'Spectral')[-6])(100)
+plotcol <- colors[cut(sce$slingPseudotime_3, breaks=100)]
+
+plot(reducedDims(sce)$PCA, col = plotcol, pch=16)
+lines(SlingshotDataSet(sce), lwd=2, col='black')
+
+# get colors for pseudotime from lineage 4
+#colors <- colorRampPalette(brewer.pal(11,'Spectral')[-6])(100)
+#plotcol <- colors[cut(sce$slingPseudotime_4, breaks=100)]
+
+#plot(reducedDims(sce)$PCA, col = plotcol, pch=16)
+#lines(SlingshotDataSet(sce), lwd=2, col='black')
+```
+
+```{r}
+intdata$pseudotime1 <- sce$slingPseudotime_1
+intdata$pseudotime2 <- sce$slingPseudotime_2
+intdata$pseudotime3 <- sce$slingPseudotime_3
+#endo_harmony$pseudotime4 <- sce$slingPseudotime_4
+FeaturePlot(intdata, c("pseudotime1", "pseudotime2", "pseudotime3"))
+```
+
+```{r, DE-Pseudotime_3}
+# select the ptime values 
+ptime1 <- sce$slingPseudotime_3
+
+# get cells in that lineage
+lineage_cells1 <- colnames(sce)[!is.na(ptime1)]
+
+# remove values for cells not in the lineage
+ptime1 <- ptime1[!is.na(ptime1)]
+
+# just test variable genes to save some time
+genes_to_test1 <- VariableFeatures(intdata)[1:1000]
+
+# get log normalized data to test
+cnts <- logcounts(sce)[genes_to_test1, lineage_cells1]
+
+
+# fit a GAM with a loess term for pseudotime
+gam.pval1 <- apply(cnts, 1, function(z){
+    d <- data.frame(z = z, 
+                    ptime1 = ptime1)
+    tmp <- suppressWarnings(gam(z ~ lo(ptime1), data=d))
+    p <- summary(tmp)[4][[1]][1, 5]
+    p
+})
+
+# adjust pvalues 
+res1 <- tibble(
+  id = names(gam.pval1),
+  pvals = gam.pval1,
+  qval = p.adjust(gam.pval1, method = "fdr")) %>% 
+  arrange(qval)
+
+head(res1)
+
+#write.csv(res1, "C:/Users/abhir/OneDrive/Documents/R_data_analysis/Trajectory_analysis/DE_pseudotime3.csv")
+
+```
+```{r, heatmap}
+# get log normalized counts 
+to_plot <- as.matrix(logcounts(sce)[res1$id[1:50], lineage_cells1])
+
+# arrange cells by pseudotime
+ptime_order1 <- colnames(to_plot)[order(ptime1)]
+
+# add useful annotations
+annotations1 <- colData(sce)[lineage_cells1, 
+                            c("slingPseudotime_3", 
+                            "seurat_clusters")] %>% as.data.frame()
+
+ha <- HeatmapAnnotation(df = annotations1)
+
+Heatmap(to_plot,
+        column_order = ptime_order1,
+        show_column_names = FALSE,
+        show_row_names = TRUE,
+        top_annotation = ha)
+```
+```{r, DE-Pseudotime_2}
+# select the ptime values 
+ptime2 <- sce$slingPseudotime_2
+
+# get cells in that lineage
+lineage_cells2 <- colnames(sce)[!is.na(ptime2)]
+
+# remove values for cells not in the lineage
+ptime2 <- ptime2[!is.na(ptime2)]
+
+# just test variable genes to save some time
+genes_to_test2 <- VariableFeatures(intdata)[1:1000]
+
+# get log normalized data to test
+cnts <- logcounts(sce)[genes_to_test2, lineage_cells2]
+
+
+# fit a GAM with a loess term for pseudotime
+gam.pval2 <- apply(cnts, 1, function(z){
+    d <- data.frame(z = z, 
+                    ptime2 = ptime2)
+    tmp <- suppressWarnings(gam(z ~ lo(ptime2), data=d))
+    p <- summary(tmp)[4][[1]][1, 5]
+    p
+})
+
+# adjust pvalues 
+res2 <- tibble(
+  id = names(gam.pval2),
+  pvals = gam.pval2,
+  qval = p.adjust(gam.pval2, method = "fdr")) %>% 
+  arrange(qval)
+
+head(res2)
+
+#write.csv(res2, "C:/Users/abhir/OneDrive/Documents/R_data_analysis/Trajectory_analysis/DE_pseudotime2.csv")
+
+```
+```{r}
+# get log normalized counts 
+to_plot <- as.matrix(logcounts(sce)[res2$id[1:50], lineage_cells2])
+
+# arrange cells by pseudotime
+ptime_order2 <- colnames(to_plot)[order(ptime2)]
+
+# add useful annotations
+annotations2 <- colData(sce)[lineage_cells2, 
+                            c("slingPseudotime_2", 
+                            "seurat_clusters")] %>% as.data.frame()
+
+ha <- HeatmapAnnotation(df = annotations2)
+
+Heatmap(to_plot,
+        column_order = ptime_order2,
+        show_column_names = FALSE,
+        show_row_names = TRUE,
+        top_annotation = ha)
+```
+
+
+```{r, DE-Pseudotime1}
+# select the ptime values 
+ptime3 <- sce$slingPseudotime_1
+
+# get cells in that lineage
+lineage_cells3 <- colnames(sce)[!is.na(ptime3)]
+
+# remove values for cells not in the lineage
+ptime3 <- ptime3[!is.na(ptime3)]
+
+# just test variable genes to save some time
+genes_to_test3 <- VariableFeatures(intdata)[1:1000]
+
+# get log normalized data to test
+cnts <- logcounts(sce)[genes_to_test3, lineage_cells3]
+
+
+# fit a GAM with a loess term for pseudotime
+gam.pval3 <- apply(cnts, 1, function(z){
+    d <- data.frame(z = z, 
+                    ptime3 = ptime3)
+    tmp <- suppressWarnings(gam(z ~ lo(ptime3), data=d))
+    p <- summary(tmp)[4][[1]][1, 5]
+    p
+})
+
+# adjust pvalues 
+res3 <- tibble(
+  id = names(gam.pval3),
+  pvals = gam.pval3,
+  qval = p.adjust(gam.pval3, method = "fdr")) %>% 
+  arrange(qval)
+
+head(res3)
+
+#write.csv(res3, "C:/Users/abhir/OneDrive/Documents/R_data_analysis/Trajectory_analysis/DE_pseudotime1.csv")
+
+```
+
+```{r}
+# get log normalized counts 
+to_plot <- as.matrix(logcounts(sce)[res3$id[1:50], lineage_cells3])
+
+# arrange cells by pseudotime
+ptime_order3 <- colnames(to_plot)[order(ptime3)]
+
+# add useful annotations
+annotations3 <- colData(sce)[lineage_cells3, 
+                            c("slingPseudotime_1", 
+                            "seurat_clusters")] %>% as.data.frame()
+
+ha <- HeatmapAnnotation(df = annotations3)
+
+Heatmap(to_plot,
+        column_order = ptime_order3,
+        show_column_names = FALSE,
+        show_row_names = TRUE,
+        top_annotation = ha)
+```
+```{r}
+#fit negative binomial GAM
+sce <- fitGAM(sce)
+
+
+#test for dynamic expression
+ATres <- associationTest(sce)
+```
+
+## R Markdown
+
