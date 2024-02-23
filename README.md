@@ -23,9 +23,9 @@ Evaluation metrics used for assessing integration performance:
 
 # Downstream Analyses
 The optimally integrated object was saved and different analyses were conducted on this object to gain deeper insights about the gene expression profiles under normal and tumor conditions:
-1) Differential Expression Analysis: Used for Identifying biomarkers closely associated with distinct cell types/conditions.
-2) Gene Coexpression Analysis: Helps in establishing co-expression networks associated with specific cell-types/conditions across various Gene Ontologies.
-3) Pseudotemporal ordering: Helps in identifying cell development trajectories.
+1) Differential Expression Analysis & GSEA: Used for Identifying biomarkers closely associated with distinct cell types/conditions. The statistical test used to determine DE genes was MAST (https://genomebiology.biomedcentral.com/articles/10.1186/s13059-015-0844-5).
+2) Gene Coexpression Analysis: Helps in establishing co-expression networks associated with specific cell-types/conditions across various Gene Ontologies. hdWGCNA method was used to perform this analysis (https://smorabit.github.io/hdWGCNA/articles/basic_tutorial.html).
+3) Pseudotemporal ordering: Helps in identifying cell development trajectories. Performed using Slingshot. Link to tutorial from Broad institute (https://broadinstitute.github.io/2020_scWorkshop/trajectory-analysis.html).
 
 # Dependencies
 R version 4.2.2
