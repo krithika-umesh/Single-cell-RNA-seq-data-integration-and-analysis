@@ -22,7 +22,7 @@ Evaluation metrics used for assessing integration performance:
 5) Local Structure Preservation: Assesses how effectively the original dataset structure is preserved post-integration.(https://satijalab.org/seurat/reference/localstruct)
 
 # Downstream Analyses
-Different analyses were conducted to gain deeper insights about the gene expression profiles under normal and tumor conditions:
+The optimally integrated object was saved and different analyses were conducted on this object to gain deeper insights about the gene expression profiles under normal and tumor conditions:
 1) Differential Expression Analysis: Used for Identifying biomarkers closely associated with distinct cell types/conditions.
 2) Gene Coexpression Analysis: Helps in establishing co-expression networks associated with specific cell-types/conditions across various Gene Ontologies.
 3) Pseudotemporal ordering: Helps in identifying cell development trajectories.
