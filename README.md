@@ -6,12 +6,12 @@ The dataset used in this project is GSE162631, which consists of 4 samples of ea
 
 # Approach
 Integration Methods
-Method 1: Seurat
-Method 2: LIGER
-Method 3: Harmony
-Method 4: Reciprocal PCA
-Method 5: scVI
-Method 6: Scanorama
+1) Seurat
+2) LIGER
+3) Harmony
+4) Reciprocal PCA
+5) scVI
+6) Scanorama
 
 # Evaluation
 Evaluation metrics used for assessing integration performance:
