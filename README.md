@@ -1,8 +1,8 @@
 # Single-cell-RNA-seq-data-integration-and-analysis
-Welcome to the scRNA-seq Integration and Analysis repository! This repository contains R code for integrating single-cell RNA sequencing (scRNA-seq) datasets using six different approaches, as well as conducting evaluation and downstream analyses. The dataset utilized in this repository was sourced from the NCBI GEO data repository.
+Welcome to the scRNA-seq Integration and Analysis repository! This repository contains R code for integrating single-cell RNA sequencing (scRNA-seq) datasets using six different approaches, as well as conducting evaluation and downstream analyses. The dataset utilized in this repository was sourced from the NCBI GEO data repository. 
 
 # Dataset Information
-The dataset used in this project is GSE162631, which consists of 4 samples of each tumor and normal endothelial cells of the brain. Two samples of tumor and normal cells were used for analysis. This dataset provides a valuable resource for studying the gene expression profiles of endothelial cells in both tumor and normal conditions. Seurat object was created for each sample and cells containing high mitochondrial transcripts were removed before the integration. 
+The dataset used in this project is GSE162631, which consists of 4 samples of each tumor and normal endothelial cells of the brain. Two samples of tumor and normal cells were used for analysis. This dataset provides a valuable resource for studying the gene expression profiles of endothelial cells in both tumor and normal conditions. Seurat object was created for each sample after ensuring the uniqueness of all values and cells containing high mitochondrial transcripts were removed before the integration. 
 
 # Approach
 Integration Methods
